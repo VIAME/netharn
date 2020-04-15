@@ -258,12 +258,13 @@ class Yolo2(layers.AnalyticModule):
             >>> output = self(inputs)
             >>> batch_dets = self.coder.decode_batch(output)
             >>> dets = batch_dets[0]
+            >>> print('dets.boxes = {!r}'.format(dets.boxes))
             >>> # xdoc: +REQUIRES(--show)
-            >>> import netharn as nh
-            >>> nh.util.autompl()  # xdoc: +SKIP
-            >>> nh.util.imshow(inputs[0], colorspace='rgb', fnum=1, doclf=True)
+            >>> import kwplot
+            >>> kwplot.autompl()  # xdoc: +SKIP
+            >>> kwplot.imshow(inputs[0], colorspace='rgb', fnum=1, doclf=True)
             >>> dets.scale(inputs.shape[-2:][::-1]).draw()
-            >>> nh.util.show_if_requested()
+            >>> kwplot.show_if_requested()
         """
         normed = self.input_norm(inputs)
         out0 = self.layers[0](normed)
@@ -449,12 +450,14 @@ class YoloCoder(object):
             >>> info = dev_demodata()
             >>> self, output = ub.take(info, ['coder', 'outputs'])
             >>> batch_dets = self.decode_batch(output)
-            >>> dets = batch_dets[0]
+            >>> dets = batch_dets[0].sort().scale(info['orig_sizes'][0])
+            >>> print('dets.boxes = {!r}'.format(dets.boxes))
             >>> # xdoctest: +REQUIRES(--show)
-            >>> nh.util.figure(fnum=1, doclf=True)
-            >>> nh.util.imshow(info['rgb255'], colorspace='rgb')
-            >>> dets.scale(info['orig_sizes'][0]).draw()
-            >>> nh.util.show_if_requested()
+            >>> import kwplot
+            >>> kwplot.figure(fnum=1, doclf=True)
+            >>> kwplot.imshow(info['rgb255'], colorspace='rgb')
+            >>> dets.draw()
+            >>> kwplot.show_if_requested()
         """
         import kwimage
         # dont modify inplace
@@ -511,7 +514,6 @@ class YoloCoder(object):
         # Compute class_score
         if len(self.classes) > 1:
             cls_scores = torch.nn.functional.softmax(class_energy, dim=2)
-
             cls_max, cls_max_idx = torch.max(cls_scores, 2, keepdim=True)
             cls_max.mul_(score)
         else:
@@ -709,12 +711,13 @@ class YoloLoss(layers.common.Loss):
             >>> loss_parts = self.forward(output, target)
             >>> print('loss_parts = {!r}'.format(loss_parts))
             >>> # xdoctest: +REQUIRES(--show)
-            >>> nh.util.figure(fnum=1, doclf=True)
+            >>> import kwplot
+            >>> kwplot.figure(fnum=1, doclf=True)
             >>> sf = info['orig_sizes'][0]
             >>> dets.boxes.scale(sf, inplace=True)
-            >>> nh.util.imshow(info['rgb255'], colorspace='rgb')
+            >>> kwplot.imshow(info['rgb255'], colorspace='rgb')
             >>> dets.draw()
-            >>> nh.util.show_if_requested()
+            >>> kwplot.show_if_requested()
         """
         class_energy = output['class_energy']
         score_energy = output['score_energy']
@@ -1063,10 +1066,9 @@ def find_anchors(dset):
         >>> xy = -anchors / 2
         >>> wh = anchors
         >>> show_boxes = np.hstack([xy, wh])
-        >>> import netharn as nh
-        >>> nh.util.figure(doclf=True, fnum=1)
-        >>> nh.util.autompl()  # xdoc: +SKIP
-        >>> nh.util.draw_boxes(show_boxes, box_format='tlwh')
+        >>> kwplot.autompl()  # xdoc: +SKIP
+        >>> kwplot.figure(doclf=True, fnum=1)
+        >>> kwplot.draw_boxes(show_boxes, box_format='tlwh')
         >>> from matplotlib import pyplot as plt
         >>> plt.gca().set_xlim(xy.min() - 1, wh.max() / 2 + 1)
         >>> plt.gca().set_ylim(xy.min() - 1, wh.max() / 2 + 1)
@@ -1147,10 +1149,10 @@ def initial_imagenet_weights():
 
 
 def demo_image(inp_size):
-    from netharn import util
+    import kwimage
     import numpy as np
     import cv2
-    rgb255 = util.grab_test_image('astro', 'rgb')
+    rgb255 = kwimage.grab_test_image('astro', 'rgb')
     rgb01 = cv2.resize(rgb255, inp_size).astype(np.float32) / 255
     im_data = torch.FloatTensor([rgb01.transpose(2, 0, 1)])
     return im_data, rgb255

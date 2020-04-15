@@ -47,10 +47,10 @@ Example:
     >>>     # ================
     >>>     # Environment Components
     >>>     'workdir'     : ub.ensure_app_cache_dir('netharn/tests/demo'),
-    >>>     'nice'        : 'demo',
+    >>>     'name'        : 'demo',
     >>>     'xpu'         : nh.XPU.coerce('argv'),
     >>>     # workdir is a directory where intermediate results can be saved
-    >>>     # nice symlinks <workdir>/fit/nice/<nice> -> ../runs/<hashid>
+    >>>     # nice symlinks <workdir>/fit/nice/<name> -> ../runs/<hashid>
     >>>     # XPU auto select a gpu if idle and VRAM>6GB else a cpu
     >>>     # ================
     >>>     # Data Components
@@ -148,6 +148,8 @@ import torch
 import numpy as np
 import ubelt as ub
 
+import scriptconfig as scfg
+
 from netharn import hyperparams
 from netharn import util
 from netharn import export
@@ -155,14 +157,13 @@ from netharn.util import profiler
 from netharn.util import strip_ansi
 from netharn.exceptions import (CannotResume, SkipBatch, StopTraining,
                                 TrainingDiverged)
-
 try:
     import tensorboard_logger
 except ImportError:
     tensorboard_logger = None
 
 
-__all__ = ['FitHarn']
+__all__ = ['FitHarn', 'FitHarnPreferences']
 
 
 # Debugging flag to run your harness in "demo mode" which only runs DEMO=5
@@ -1309,10 +1310,10 @@ class CoreMixin(object):
             if harn.preferences['prog_backend'] == 'progiter':
                 harn.info(ub.color_text('=== {} training {!r} / {!r} : {} ==='.format(
                     action, harn.epoch + 1, harn.monitor.max_epoch,
-                    harn.hyper.nice), 'white'))
+                    harn.hyper.name), 'white'))
             else:
                 harn.info(ub.color_text('=== {} training : {} ==='.format(
-                    action, harn.hyper.nice), 'white'))
+                    action, harn.hyper.name), 'white'))
 
             harn.main_prog = harn._make_prog(desc='epoch',
                                              total=harn.monitor.max_epoch,
@@ -1353,8 +1354,8 @@ class CoreMixin(object):
             ### THIS IS THE MAIN LOOP ###
             #############################
 
-            with ub.Timer() as timer:
-
+            with ub.Timer() as _timer:
+                harn._timer = _timer
                 for harn.epoch in it.count(harn.epoch):
                     harn._run_tagged_epochs(
                         train_loader,
@@ -1363,7 +1364,7 @@ class CoreMixin(object):
                     )
                     if DEMO and harn.epoch > DEMO:
                         raise StopTraining
-                    elif timer.toc() > harn.preferences['timeout']:
+                    elif _timer.toc() > harn.preferences['timeout']:
                         harn.info('timeout')
                         raise StopTraining
 
@@ -1377,6 +1378,14 @@ class CoreMixin(object):
             if not harn.preferences['keyboard_debug']:
                 harn.warn('\n\n\n')
                 harn.info('harn.train_dpath = {!r}'.format(harn.train_dpath))
+
+                if harn.preferences['snapshot_after_error']:
+                    harn.info('Attempting to checkpoint before crashing')
+                    harn.save_snapshot(explicit=True)
+
+                if harn.preferences['deploy_after_error']:
+                    harn.info('Attempting to deploy before crashing')
+                    harn._deploy()
                 raise
             from six.moves import input
             harn.warn('\n\n\n')
@@ -1410,6 +1419,11 @@ class CoreMixin(object):
                 elif ans == 'c':
                     harn.save_snapshot(explicit=True)
                 elif ans == 'r':
+                    # This might have issues because the referenes in this
+                    # function are still held. Likely the better way to
+                    # implement this is by handling the error gracefully and
+                    # looping within this function. Might require a
+                    # restructure.
                     return harn.run()
                 elif ans == 'e':
                     import xdev
@@ -1419,10 +1433,16 @@ class CoreMixin(object):
             raise
         except Exception as ex:
             harn.error('\n\n\n')
+            harn.info('general exception')
+            print('harn.preferences = {!r}'.format(harn.preferences))
 
             if harn.preferences['snapshot_after_error']:
                 harn.info('Attempting to checkpoint before crashing')
                 harn.save_snapshot(explicit=True)
+
+            if harn.preferences['deploy_after_error']:
+                harn.info('Attempting to deploy before crashing')
+                harn._deploy()
 
             harn.info('harn.train_dpath = {!r}'.format(harn.train_dpath))
             harn.error('an {} error occurred in the train loop: {}'.format(
@@ -1462,10 +1482,9 @@ class CoreMixin(object):
             model_class = harn.hyper.model_cls
             model_params = harn.hyper.model_params
             export_modules = harn.preferences['export_modules']
-            static_modpath = export.export_model_code(harn.train_dpath,
-                                                      model_class,
-                                                      initkw=model_params,
-                                                      export_modules=export_modules)
+            static_modpath = export.export_model_code(
+                harn.train_dpath, model_class, initkw=model_params,
+                export_modules=export_modules)
             harn.info('Exported model topology to {}'.format(static_modpath))
         except Exception as ex:
             harn.warn('Failed to export model topology: {}'.format(repr(ex)))
@@ -1490,7 +1509,8 @@ class CoreMixin(object):
 
         try:
             deploy_fpath = export.DeployedModel(harn.train_dpath).package()
-            harn.info('wrote single-file deployment to: {!r}'.format(deploy_fpath))
+            harn.info('wrote single-file deployment to: {!r}'.format(
+                deploy_fpath))
 
             if True:
                 # symlink the deployed model to a static filename to make it
@@ -1618,7 +1638,7 @@ class CoreMixin(object):
             if harn.preferences['prog_backend'] == 'progiter':
                 harn.info(ub.color_text(
                     '=== finish epoch {!r} / {!r} : {} ==='.format(
-                        harn.epoch + 1, harn.monitor.max_epoch, harn.hyper.nice),
+                        harn.epoch + 1, harn.monitor.max_epoch, harn.hyper.name),
                     'white'))
 
             harn._update_main_prog_desc()
@@ -1695,6 +1715,8 @@ class CoreMixin(object):
         display_interval = harn.intervals['display_' + tag]
         is_profiling = profiler.IS_PROFILING
         use_tqdm = harn.preferences['prog_backend'] == 'tqdm'
+        timeout = harn.preferences['timeout']
+        _timer = harn._timer
 
         if isinstance(prog, ub.ProgIter):
             prog.begin()
@@ -1725,6 +1747,9 @@ class CoreMixin(object):
             for bx in range(n_batches):
                 if DEMO and bx > DEMO_BX:
                     break
+                if _timer is not None and _timer.toc() > timeout:
+                    harn.info('timeout')
+                    raise StopTraining
 
                 try:
                     raw_batch = next(batch_iter)
@@ -1755,16 +1780,18 @@ class CoreMixin(object):
                                 if np.isfinite(float(v)):
                                     loss_parts_[k] = v
                                 else:
-                                    harn.warn('Ignoring infinite loss component. Setting to large value')
+                                    harn.warn(
+                                        'Ignoring infinite loss component. '
+                                        'Setting to large value')
 
                             if not loss_parts_:
-                                raise SkipBatch('all loss components were infinite')
+                                raise SkipBatch(
+                                    'all loss components were infinite')
 
                             loss = sum(loss_parts_.values())
                         else:
                             loss = sum(loss_parts.values())
 
-                    # Backpropogate to accumulate gradients and step the optimizer
                     if learn:
                         harn.backpropogate(bx, batch, loss)
 
@@ -2136,6 +2163,9 @@ class CoreCallbacks(object):
     def backpropogate(harn, bx, batch, loss):
         """Custom callback which can overwrite the default backward pass
 
+        Backpropogate accumulates gradients, optionally checks and logs the
+        gradients, steps the optimizer, and zeros the gradients.
+
         Overload is generally not necessary for this function.
 
         TODO:
@@ -2381,8 +2411,8 @@ class FitHarn(ExtraMixins, InitializeMixin, ProgMixin, LogMixin, SnapshotMixin,
 
         if DEMO:
             # Hack to prefix the nice name in DEMO mode
-            if harn.hyper.nice is not None:
-                harn.hyper.nice = 'DEMO_' + harn.hyper.nice
+            if harn.hyper.name is not None:
+                harn.hyper.name = 'DEMO_' + harn.hyper.name
             else:
                 raise AssertionError('should have a nice name in demo mode')
 
@@ -2461,51 +2491,8 @@ class FitHarn(ExtraMixins, InitializeMixin, ProgMixin, LogMixin, SnapshotMixin,
             'cleanup': 10,
         }
 
-        # TODO: it might be interesting for preferences to have two defaults, a
-        # minimal default and a recommended default. The safe default is
-        # statically defined to the minimum requirements, and recommended could
-        # be manually or hueristically constructed.
-
-        harn.preferences = {
-            'keyboard_debug': True,
-
-            'snapshot_after_error': True,  # Try to checkpoint before crashing
-
-            'show_prog': True,
-            'use_tqdm': None,
-            'prog_backend': 'progiter',  # can be 'progiter' or 'tqdm' or 'auto'
-
-            # If your loss criterion returns a dictionary of parts, ignore any
-            # infinite values before summing the total loss.
-            'ignore_inf_loss_parts': False,
-
-            'log_gradients': True,  # compute and log stats about gradients
-
-            'use_tensorboard': True,
-
-            # If True, logs tensorboard within inner iteration (experimental)
-            'eager_dump_tensorboard': False,
-            'tensorboard_groups': ['loss'],  # patterns to be grouped in tensorboard
-
-            # Set this to a list of modules that the final standalone deployed
-            # zipfile should not depend on. The exporter will expand any code
-            # from these modules that are referenced by the model class.
-            'export_modules': [],
-
-            # Export the model topology by default when you initialize a harness
-            'export_on_init': True,
-
-            # A loss that would be considered large
-            # (This tells netharn when to check for divergence)
-            'large_loss': 1000,
-
-            # number of recent / best snapshots to keep
-            'num_keep': 2,
-            # Ensure we always keep a snapshot every `freq` epochs
-            'keep_freq': 20,
-
-            'timeout': float('inf'),  # limits the amount of time training can take
-        }
+        # This is only used as a dictionary.
+        harn.preferences = FitHarnPreferences(cmdline=False)
 
         # This variable should be used to store your custom script
         # configuration
@@ -2517,6 +2504,8 @@ class FitHarn(ExtraMixins, InitializeMixin, ProgMixin, LogMixin, SnapshotMixin,
         harn._initialized = False
         harn._log = None
         harn._tlog = None
+
+        harn._timer = None
 
     @property
     def config(harn):
@@ -2539,7 +2528,7 @@ class FitHarn(ExtraMixins, InitializeMixin, ProgMixin, LogMixin, SnapshotMixin,
             bool: if it is time to do something or not
         """
         n = harn.intervals[tag]
-        if n is None:
+        if n is None or n == 0:
             return False
         elif isinstance(n, int):
             # Intervals can be numbers corresponding to strides
@@ -2555,6 +2544,95 @@ class FitHarn(ExtraMixins, InitializeMixin, ProgMixin, LogMixin, SnapshotMixin,
                 return False
             step = 1 if n.step is None else n.step
             return (idx + start + 1) % step == 0
+
+
+class FitHarnPreferences(scfg.Config):
+    """
+    Using scriptconfig to declare defaults for netharn's preferences and
+    options. This makes it easy to extend via the commandline.
+
+    Example:
+        >>> from netharn.fit_harn import *  # NOQA
+        >>> config = FitHarnPreferences()
+        >>> config.argparse().print_help()
+    """
+    # TODO: it might be interesting for preferences to have two defaults, a
+    # minimal default and a recommended default. The safe default is
+    # statically defined to the minimum requirements, and recommended could
+    # be manually or hueristically constructed.
+    default = {
+        'keyboard_debug': scfg.Value(True, help=(
+            'Catch keyboard interupt with a somewhat-interactive prompt')
+        ),
+
+        'snapshot_after_error': scfg.Value(True, help=(
+            'Try to checkpoint before crashing')
+        ),
+
+        'deploy_after_error': scfg.Value(True, help=(
+            'Try to deploy before crashing')
+        ),
+
+        'show_prog': scfg.Value(True, help=(
+            'displays progress')
+        ),
+        'prog_backend': scfg.Value(
+            'progiter', choices=['progiter', 'tqdm', 'auto'], help=(
+                'which progress library to use')
+        ),
+
+        'ignore_inf_loss_parts': scfg.Value(False, help=(
+            'If your loss criterion returns a dictionary of parts,'
+            ' ignore any infinite values before summing the total loss.')
+        ),
+
+        'log_gradients': scfg.Value(False, help=(
+            'compute and log stats about gradients')
+        ),
+
+        'use_tensorboard': scfg.Value(True, help=(
+            'enable logging to tensorboard if available')
+        ),
+
+        'eager_dump_tensorboard': scfg.Value(True, help=(
+            'If True, logs tensorboard within inner iteration'
+            ' (experimental)')
+        ),
+
+        'tensorboard_groups': scfg.Value(['loss'], help=(
+            'patterns to be grouped in tensorboard')
+        ),
+
+        'export_modules': scfg.Value([], help=(
+            'Set this to a list of modules that the final standalone deployed'
+            ' zipfile should not depend on. The exporter will expand any code'
+            ' from these modules that are referenced by the model class.')
+        ),
+
+        'export_on_init': scfg.Value(True, help=(
+            'Export the model topology by default'
+            ' when you initialize a harness')
+        ),
+
+        'large_loss': scfg.Value(1000, help=(
+            'A loss that would be considered large '
+            '(This tells netharn when to check for divergence)')
+        ),
+
+        'num_keep': scfg.Value(2, help=(
+            'number of recent / best snapshots to keep')
+        ),
+        'keep_freq': scfg.Value(20, help=(
+            'Ensure we always keep a snapshot every `freq` epochs')
+        ),
+
+        'timeout': scfg.Value(float('inf'), help=(
+                'limits the amount of time training can take')
+        ),
+
+        # Deprecated
+        'use_tqdm': scfg.Value(None, help='deprecated'),
+    }
 
 
 if __name__ == '__main__':
