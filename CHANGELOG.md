@@ -4,7 +4,49 @@ This changelog follows the specifications detailed in: [Keep a Changelog](https:
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), although we have not yet reached a `1.0.0` release.
 
 
-## Version 0.5.6 - Unreleased
+## Version 0.5.9 - Unreleased
+
+### Changed
+ 
+* `_dump_monitor_tensorboard` now additionally writes a bash script to quickly
+  let the user re-visualize results in the case of mpl backend failure.
+
+
+### Added
+
+* `BatchContainer.pack` for easier use of non-container aware models.
+
+
+## Version 0.5.8 - Released
+
+## Version 0.5.7 - Released
+
+### Changed
+* `harn.deploy_fpath` is now populated when the model is deployed.
+* Improved docs on `netharn/data/toydata.py`
+* Changed name of `torch_shapshots` directory name to `checkpoints`.
+
+### Added
+* Ported experimental `ChannelSpec` and `DataContainser` from bioharn to netharn.data.
+* Added basic classification example that works on generic coco datasets
+* Threshold curves to ConfusionVector metrics
+* Initial weights are now saved in `initial_state` directory.
+* New `plots` submodule.
+
+### Fixed
+* Fixed bug in XPU auto mode which caused it always to choose GPU 0.
+* Bug in hyperparams where dict-based loader spec was not working.
+* Display intervals were not working correctly with ProgIter, hacked in a temporary fix.
+
+
+## Version 0.5.6 - Released 2020-04-16
+
+### Changed
+* Enhanced VOC ensure data 
+
+
+### Fixed
+* Version issues from last release
 
 
 ## Version 0.5.5

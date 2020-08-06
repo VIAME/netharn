@@ -408,7 +408,6 @@ class XPU(ub.NiceRepr):
             }
 
         """
-        gpus = gpu_info()
         info = {
             'available': 0,
             'total': 0,
@@ -427,10 +426,11 @@ class XPU(ub.NiceRepr):
             info['used'] += tup.used * MB
             info['available'] += tup.available * MB
         else:
-            for id in self._device_ids:
-                info['total'] += gpus[id]['mem_total']
-                info['used'] += gpus[id]['mem_used']
-                info['available'] += gpus[id]['mem_avail']
+            gpus = gpu_info()
+            for index in self._device_ids:
+                info['total'] += gpus[index]['mem_total']
+                info['used'] += gpus[index]['mem_used']
+                info['available'] += gpus[index]['mem_avail']
         return info
 
     def __str__(xpu):
@@ -668,12 +668,25 @@ def find_unused_gpu(min_memory=0):
     CommandLine:
         python -c "from netharn import device; print(device.find_unused_gpu(300))"
 
+        CUDA_VISIBLE_DEVICES=1; python -c "from netharn import device; print(device.find_unused_gpu(300))"
+
     Example:
         >>> if torch.cuda.is_available():
         >>>     item = find_unused_gpu()
         >>>     assert item is None or isinstance(item, int)
     """
-    gpus = gpu_info()
+
+    # Notes on slurm:
+    # If we are running in slurm, then we should be able to see these
+    # environment vars
+    # SLURM_STEP_GPUS
+    # GPU_DEVICE_ORDINAL
+    # Also respect CUDA_VISIBLE_DEVICES
+    try:
+        gpus = gpu_info()
+    except NvidiaSMIError:
+        gpus = None
+
     if not gpus:
         return None
 
@@ -725,12 +738,20 @@ def _query_nvidia_smi(mode, fields):
     return rows
 
 
-def gpu_info(new_mode=True):
+class NvidiaSMIError(Exception):
+    pass
+
+
+def gpu_info(new_mode=True, respect_visible_devices=True):
     """
     Run nvidia-smi and parse output
 
     Args:
         new_mode: internal argument that changes the underlying implementation
+
+        respect_visible_devices (bool, default=True): if True respects
+            CUDA_VISIBLE_DEVICES environment variable, otherwise returns
+            data corresponding to physical GPU indexes.
 
     Returns:
         OrderedDict: info about each GPU indexed by gpu number
@@ -748,9 +769,9 @@ def gpu_info(new_mode=True):
         >>> # xdoctest: +REQUIRES(--cuda)
         >>> from netharn.device import gpu_info
         >>> gpus = gpu_info()
-        >>> assert len(gpus) == torch.cuda.device_count()
         >>> # xdoctest: +IGNORE_WANT
         >>> print('gpus = {}'.format(ub.repr2(gpus, nl=4)))
+        >>> assert len(gpus) == torch.cuda.device_count()
         gpus = {
             0: {
                 'gpu_uuid': 'GPU-348ebe36-252b-46fa-8a97-477ae331f6f4',
@@ -852,7 +873,7 @@ def gpu_info(new_mode=True):
             print(info['err'])
             warnings.warn('Problem running nvidia-smi: ret='.format(
                 info['ret']))
-            return None
+            raise NvidiaSMIError
         xml_string = info['out']
         root = ET.fromstring(xml_string)
 
@@ -887,9 +908,8 @@ def gpu_info(new_mode=True):
                     raise NotImplementedError(proc['type'])
             gpu['num_compute_procs'] = num_compute_procs
             gpu['num_graphics_procs'] = num_graphics_procs
-        return gpus
 
-    if new_mode:
+    elif new_mode:
         # This is slightly more robust than the old mode, but it also makes
         # more than one call to nvidia-smi and cannot return information about
         # graphics processes.
@@ -900,7 +920,7 @@ def gpu_info(new_mode=True):
             gpu_rows = _query_nvidia_smi(mode, fields)
         except Exception as ex:
             warnings.warn('Problem running nvidia-smi: {!r}'.format(ex))
-            return None
+            raise NvidiaSMIError
 
         fields = ['pid', 'name', 'gpu_uuid', 'used_memory']
         mode = 'query-compute-apps'
@@ -918,7 +938,7 @@ def gpu_info(new_mode=True):
             gpu['procs'] = []
             gpus[num] = gpu
 
-        gpu_uuid_to_num = {g['gpu_uuid']: gpu['num'] for g in gpus.values()}
+        gpu_uuid_to_num = {gpu['gpu_uuid']: gpu['num'] for gpu in gpus.values()}
 
         for row in proc_rows:
             # Give each GPU info on which processes are using it
@@ -974,10 +994,10 @@ def gpu_info(new_mode=True):
             result = ub.cmd('nvidia-smi')
             if result['ret'] != 0:
                 warnings.warn('Problem running nvidia-smi.')
-                return None
+                raise NvidiaSMIError
         except Exception:
             warnings.warn('Could not run nvidia-smi.')
-            return {}
+            raise NvidiaSMIError
 
         lines = result['out'].splitlines()
 
@@ -1083,6 +1103,22 @@ def gpu_info(new_mode=True):
                     raise NotImplementedError(proc['type'])
             gpu['num_compute_procs'] = num_compute_procs
             gpu['num_graphics_procs'] = num_graphics_procs
+
+    if respect_visible_devices:
+        # Respect CUDA_VISIBLE_DEVICES, nvidia-smi does not respect this by
+        # default so remap to gain the appropriate effect.
+        val = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        parts = (p.strip() for p in val.split(','))
+        visible_devices = [int(p) for p in parts if p]
+
+        if visible_devices:
+            remapped = {}
+            for visible_idx, real_idx in enumerate(visible_devices):
+                gpu = remapped[visible_idx] = gpus[real_idx]
+                gpu['index'] = str(visible_idx)
+                gpu['num'] = visible_idx
+                gpu['real_num'] = real_idx
+            gpus = remapped
 
     return gpus
 
