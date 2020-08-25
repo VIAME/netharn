@@ -282,8 +282,8 @@ def load_partial_state(model, model_state_dict, leftover=None,
 
     """
     if association is None:
-        # association = 'module-hack'  # old default
-        association = 'prefix-hack'  # new default
+        association = 'module-hack'  # old default
+        # association = 'prefix-hack'  # new default
 
     if initializer is not None:
         import warnings
@@ -601,7 +601,9 @@ def maximum_common_ordered_subpaths(paths1, paths2, sep='.'):
         >>> paths1 = sorted(resnet50.state_dict().keys())[0:100]
         >>> paths2 = ['prefix.' + k for k in paths1]
         >>> paths2.append('extra_key')
-        >>> maximum_common_ordered_subpaths(paths1, paths2)
+        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2)
+        >>> mapping = ub.dzip(subpaths1, subpaths2)
+        >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
 
     Example:
         >>> rng = None
@@ -612,13 +614,16 @@ def maximum_common_ordered_subpaths(paths1, paths2, sep='.'):
         >>>     parts = list(map(chr, rng.randint(ord('a'), ord('z'), size=depth)))
         >>>     path = '.'.join(parts)
         >>>     return path
-        >>> n = 20
+        >>> n = 50
         >>> paths1 = sorted({random_paths(rng) for _ in range(n)})
         >>> paths2 = sorted({random_paths(rng) for _ in range(n)})
         >>> paths1 = paths1 + ['a.' + k for k in paths2[0:n // 3]]
         >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2)
+        >>> mapping = ub.dzip(subpaths1, subpaths2)
+        >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
 
     Example:
+        >>> from netharn.initializers.functional import *  # NOQA
         >>> paths1 = [
         >>>     'stats',
         >>>     'z.mod.f.0.w',
@@ -636,24 +641,50 @@ def maximum_common_ordered_subpaths(paths1, paths2, sep='.'):
         >>>     'stats',
         >>>     'bar.f.0.w',
         >>>     'bar.foo.extra.z.q',
-        >>>     'bar.foo.extra.f.0.w',
+        >>>     'bar.foo.extra',
         >>>     'bar.foo.extra.f.1.b',
         >>>     'bar.foo.extra.f.1.n',
         >>>     'bar.foo.extra.f.1.w',
         >>>     'bar.foo.extra.f.3.z',  # FIXME we need to handle label comparision operators
         >>>     # I think we allow labels to match if they have the same suffix
         >>> ]
-        >>> #
-        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2)
+        >>> sep = '.'
+        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2, sep)
+        >>> mapping = ub.dzip(subpaths1, subpaths2)
+        >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
+
+
+    Example:
+        >>> sep = '.'
+        >>> paths1 = ['a.b']
+        >>> paths2 = ['a.b']
+        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2, sep)
+        >>> mapping = ub.dzip(subpaths1, subpaths2)
+        >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
+        >>> paths1 = ['c.a.b']
+        >>> paths2 = ['a.b']
+        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2, sep)
+        >>> mapping = ub.dzip(subpaths1, subpaths2)
+        >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
+        >>> paths1 = ['c.a.b', 'c.a.e', 'c.a.q']
+        >>> paths2 = ['a.b', 'c.e', 'c.a', 'a.q']
+        >>> subpaths1, subpaths2 = maximum_common_ordered_subpaths(paths1, paths2, sep)
         >>> mapping = ub.dzip(subpaths1, subpaths2)
         >>> print('mapping = {}'.format(ub.repr2(mapping, nl=1)))
     """
     import networkx as nx
 
     # the longest common balanced sequence problem
-    def _matchable(tok1, tok2):
-        return tok1[-1] == tok2[-1]
-    eq = _matchable
+    def _affinity(tok1, tok2):
+        score = 0
+        for t1, t2 in zip(tok1[::-1], tok2[::-1]):
+            if t1 == t2:
+                score += 1
+            else:
+                break
+        return score
+        # return tok1[-1] == tok2[-1]
+    node_affinity = _affinity
     # import operator
     # eq = operator.eq
 
@@ -674,13 +705,17 @@ def maximum_common_ordered_subpaths(paths1, paths2, sep='.'):
     tree1 = paths_to_tree(paths1)
     tree2 = paths_to_tree(paths2)
 
+    # _print_forest(tree1)
+    # _print_forest(tree2)
+
     # if 0:
     #     DiGM = isomorphism.DiGraphMatcher(tree1, tree2)
     #     DiGM.is_isomorphic()
     #     list(DiGM.subgraph_isomorphisms_iter())
 
     from netharn.initializers import _nx_extensions
-    subtree1, subtree2 = _nx_extensions.maximum_common_ordered_tree_embedding(tree1, tree2, eq=eq)
+    subtree1, subtree2 = _nx_extensions.maximum_common_ordered_tree_embedding(tree1, tree2, node_affinity=node_affinity)
+    # subtree1, subtree2 = _nx_extensions.maximum_common_ordered_subtree_isomorphism(tree1, tree2, node_affinity=node_affinity)
 
     subpaths1 = [sep.join(node) for node in subtree1.nodes if subtree1.out_degree[node] == 0]
     subpaths2 = [sep.join(node) for node in subtree2.nodes if subtree2.out_degree[node] == 0]

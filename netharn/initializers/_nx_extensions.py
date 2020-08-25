@@ -1,7 +1,5 @@
-import numpy as np
 import operator
 import ubelt as ub
-from netharn.util.util_misc import FlatIndexer
 import networkx as nx
 
 try:
@@ -12,15 +10,16 @@ except Exception:
 
 
 # These did not help the speed
-DECOMP_SEQ_INDEX = 0
-USE_FAST_CAT_SHIFT_INDEX = 0
-TRY_USE_CYTHON = 1
+TRY_USE_CYTHON = 0
 
 
 @profile
-def maximum_common_ordered_tree_embedding(tree1, tree2, eq=None):
+def maximum_common_ordered_tree_embedding(tree1, tree2, node_affinity='auto'):
     """
     Finds the maximum common subtree-embedding between two ordered trees.
+
+    A tree S is an embedded subtree of T if it can be obtained from T by a
+    series of edge contractions.
 
     Note this produces a subtree embedding, which is not necessarilly a
     subgraph isomorphism (although a subgraph isomorphism is also an
@@ -36,8 +35,10 @@ def maximum_common_ordered_tree_embedding(tree1, tree2, eq=None):
         On the Maximum Common Embedded Subtree Problem for Ordered Trees
         https://pdfs.semanticscholar.org/0b6e/061af02353f7d9b887f9a378be70be64d165.pdf
 
+        http://algo.inria.fr/flajolet/Publications/FlSiSt90.pdf
+
     Notes:
-        Exact algorithms for computing the tree edit distance between unordered trees - https://pdf.sciencedirectassets.com/271538/1-s2.0-S0304397510X00299/1-s2.0-S0304397510005463/main.pdf?
+        Exact algorithms for computing the tree edit distance between unordered trees - https://pdf.sciencedirectassets.com/271538/1-s2.0-S0304397510X00299/1-s2.0-S0304397510005463/main.pdf ?
 
         Tree Edit Distance and Common Subtrees - https://upcommons.upc.edu/bitstream/handle/2117/97554/R02-20.pdf
 
@@ -47,11 +48,11 @@ def maximum_common_ordered_tree_embedding(tree1, tree2, eq=None):
 
         tree1 (nx.OrderedDiGraph): first ordered tree
         tree2 (nx.OrderedDiGraph): second ordered tree
-        eq (callable): function
+        node_affinity (callable): function
 
     Example:
         >>> from netharn.initializers._nx_extensions import *  # NOQA
-        >>> from netharn.initializers.functional import _best_prefix_transform
+        >>> from netharn.initializers._nx_extensions import _lcs, _print_forest
         >>> def random_ordered_tree(n, seed=None):
         >>>     tree = nx.dfs_tree(nx.random_tree(n, seed=seed))
         >>>     otree = nx.OrderedDiGraph()
@@ -59,52 +60,16 @@ def maximum_common_ordered_tree_embedding(tree1, tree2, eq=None):
         >>>     return otree
         >>> tree1 = random_ordered_tree(10, seed=1)
         >>> tree2 = random_ordered_tree(10, seed=2)
+        >>> print('tree1')
         >>> _print_forest(tree1)
+        >>> print('tree2')
         >>> _print_forest(tree2)
 
-        >>> subtree1, subtree2 = maximum_common_ordered_tree_embedding(tree1, tree2 )
-        >>> _print_forest(subtree1)
-        >>> _print_forest(subtree2)
-
-    Ignore:
-        >>> from networkx import isomorphism
-        >>> assert isomorphism.DiGraphMatcher(tree1, subtree1).subgraph_is_isomorphic()
-        >>> assert isomorphism.DiGraphMatcher(tree2, subtree2).subgraph_is_isomorphic()
-
-        >>> list(isomorphism.DiGraphMatcher(tree1, tree2).subgraph_isomorphisms_iter())
-        >>> list(isomorphism.DiGraphMatcher(tree1, tree2).subgraph_monomorphisms_iter())
-
-        >>> list(isomorphism.DiGraphMatcher(subtree1, subtree2).subgraph_isomorphisms_iter())
-
-
-        >>> from networkx import isomorphism
-        >>> tree1 = nx.DiGraph(nx.path_graph(4, create_using=nx.OrderedDiGraph()))
-        >>> tree2 = nx.DiGraph(nx.path_graph(4, create_using=nx.OrderedDiGraph()))
-
-        >>> DiGM = isomorphism.DiGraphMatcher(tree1, tree2)
-        >>> DiGM.is_isomorphic()
-
-        >>> list(DiGM.subgraph_isomorphisms_iter())
-
-        # the longest common balanced sequence problem
-        def _matchable(tok1, tok2):
-            return tok1.value[-1] == tok2.value[-1]
-        eq = _matchable
-        print([n for n in tree1.nodes if tree1.in_degree[n] > 1])
-        print([n for n in tree2.nodes if tree2.in_degree[n] > 1])
-        _print_forest(tree1)
-        _print_forest(tree2)
-        subtree1, subtree2 = maximum_common_ordered_tree_embedding(tree1, tree2, eq=eq)
-        # for n in subtree1.nodes:
-        #     subtree1.nodes[n]['label'] = n[-1]
-        _print_forest(subtree1)
-        _print_forest(subtree2)
-
-        tree1_remain = tree1.copy()
-        tree1_remain.remove_nodes_from(subtree1.nodes)
-        _print_forest(tree1_remain)
-
-        tree = tree1
+        >>> embedding1, embedding2 = maximum_common_ordered_tree_embedding(tree1, tree2 )
+        >>> print('embedding1')
+        >>> _print_forest(embedding1)
+        >>> print('embedding2')
+        >>> _print_forest(embedding2)
     """
     if not (isinstance(tree1, nx.OrderedDiGraph) and nx.is_forest(tree1)):
         raise nx.NetworkXNotImplemented('only implemented for directed ordered trees')
@@ -121,7 +86,163 @@ def maximum_common_ordered_tree_embedding(tree1, tree2, eq=None):
 
     # Solve the longest common balanced sequence problem
     best, value = longest_common_balanced_sequence(
-        seq1, seq2, open_to_close, open_to_tok=open_to_tok, eq=eq)
+        seq1, seq2, open_to_close, open_to_tok=open_to_tok, node_affinity=node_affinity)
+    subseq1, subseq2 = best
+
+    # Convert the subsequence back into a tree
+    embedding1 = seq_to_tree(subseq1, open_to_close, toks)
+    embedding2 = seq_to_tree(subseq2, open_to_close, toks)
+    return embedding1, embedding2
+
+
+@profile
+def maximum_common_ordered_subtree_isomorphism(tree1, tree2, node_affinity='auto'):
+    """
+    Isomorphic version of `maximum_common_ordered_tree_embedding`.
+
+    CommandLine:
+        xdoctest -m /home/joncrall/code/netharn/netharn/initializers/_nx_extensions.py maximum_common_ordered_subtree_isomorphism:1 --profile && cat profile_output.txt
+
+    Example:
+        >>> from netharn.initializers._nx_extensions import *  # NOQA
+        >>> from netharn.initializers._nx_extensions import _lcs, _print_forest
+        >>> def random_ordered_tree(n, seed=None):
+        >>>     tree = nx.dfs_tree(nx.random_tree(n, seed=seed))
+        >>>     otree = nx.OrderedDiGraph()
+        >>>     otree.add_edges_from(tree.edges)
+        >>>     return otree
+        >>> tree1 = random_ordered_tree(10, seed=3)
+        >>> tree2 = random_ordered_tree(10, seed=2)
+        >>> tree1.add_edges_from(tree2.edges, weight=1)
+        >>> tree1 = nx.minimum_spanning_arborescence(tree1)
+        >>> tree2.add_edges_from(tree1.edges, weight=1)
+        >>> tree2 = nx.minimum_spanning_arborescence(tree2)
+
+        >>> tree1.remove_edge(4, 7)
+        >>> tree1.remove_edge(4, 9)
+        >>> tree1.add_edge(4, 10)
+        >>> tree1.add_edge(10, 7)
+        >>> tree1.add_edge(10, 9)
+        >>> #tree1.add_edges_from([(9, 11), (11, 12), (12, 13), (13, 14)])
+        >>> #tree2.add_edges_from([(9, 11), (11, 12), (12, 13), (13, 14)])
+        >>> tree1.add_edges_from([(9, 11), (11, 12)])
+        >>> tree2.add_edges_from([(9, 11), (11, 12)])
+        >>> tree2.add_edge(100, 0)
+        >>> tree1.add_edge(102, 100)
+        >>> tree1.add_edge(100, 101)
+        >>> tree1.add_edge(101, 0)
+        >>> tree1.add_edge(5, 201)
+        >>> tree1.add_edge(5, 202)
+        >>> tree1.add_edge(5, 203)
+        >>> tree1.add_edge(201, 2000)
+        >>> tree1.add_edge(2000, 2001)
+        >>> tree1.add_edge(2001, 2002)
+        >>> tree1.add_edge(2002, 2003)
+
+        >>> tree2.add_edge(5, 202)
+        >>> tree2.add_edge(5, 203)
+        >>> tree2.add_edge(5, 201)
+        >>> tree2.add_edge(201, 2000)
+        >>> tree2.add_edge(2000, 2001)
+        >>> tree2.add_edge(2001, 2002)
+        >>> tree2.add_edge(2002, 2003)
+
+        >>> print('-----')
+        >>> print('tree1')
+        >>> _print_forest(tree1)
+        >>> print('tree2')
+        >>> _print_forest(tree2)
+
+        >>> subtree1, subtree2 = maximum_common_ordered_subtree_isomorphism(tree1, tree2 )
+        >>> print('-----')
+        >>> print('subtree1')
+        >>> _print_forest(subtree1)
+        >>> print('subtree2')
+        >>> _print_forest(subtree2)
+
+        >>> embedding1, embedding2 = maximum_common_ordered_tree_embedding(tree1, tree2)
+        >>> print('-----')
+        >>> print('embedding1')
+        >>> _print_forest(embedding1)
+        >>> print('embedding2')
+        >>> _print_forest(embedding2)
+
+        >>> if 0:
+        >>>     ti = timerit.Timerit(6, bestof=2, verbose=2)
+        >>>     for timer in ti.reset('isomorphism'):
+        >>>         with timer:
+        >>>             maximum_common_ordered_subtree_isomorphism(tree1, tree2 )
+        >>>     for timer in ti.reset('embedding'):
+        >>>         with timer:
+        >>>             maximum_common_ordered_tree_embedding(tree1, tree2 )
+
+        >>> from networkx import isomorphism
+        >>> assert isomorphism.DiGraphMatcher(tree1, subtree1).subgraph_is_isomorphic()
+        >>> assert isomorphism.DiGraphMatcher(tree2, subtree2).subgraph_is_isomorphic()
+
+        >>> list(isomorphism.DiGraphMatcher(tree1, tree2).subgraph_isomorphisms_iter())
+        >>> list(isomorphism.DiGraphMatcher(tree1, tree2).subgraph_monomorphisms_iter())
+
+        >>> list(isomorphism.DiGraphMatcher(subtree1, subtree2).subgraph_isomorphisms_iter())
+        >>> list(isomorphism.DiGraphMatcher(tree1, subtree1).subgraph_isomorphisms_iter())
+        >>> list(isomorphism.DiGraphMatcher(tree2, subtree2).subgraph_isomorphisms_iter())
+
+    Example:
+        >>> from netharn.initializers._nx_extensions import *  # NOQA
+        >>> from netharn.initializers._nx_extensions import _lcs, _print_forest
+        >>> def random_ordered_tree(n, seed=None):
+        >>>     if n > 0:
+        >>>         tree = nx.dfs_tree(nx.random_tree(n, seed=seed))
+        >>>     otree = nx.OrderedDiGraph()
+        >>>     if n > 0:
+        >>>         otree.add_edges_from(tree.edges)
+        >>>     return otree
+        >>> import random
+        >>> rng = random.Random(90269698983701724775426457020022)
+        >>> num = 1000
+        >>> def _gen_seeds(num):
+        >>>     for _ in range(num):
+        >>>         yield (rng.randint(0, 50), rng.randint(0, 50), rng.randint(0, 2 ** 64), rng.randint(0, 2 ** 64))
+        >>> for n1, n2, s1, s2 in ub.ProgIter(_gen_seeds(num=num), total=num, verbose=3):
+        >>>     tree1 = random_ordered_tree(n1, seed=s1)
+        >>>     tree2 = random_ordered_tree(n2, seed=s2)
+        >>>     #print('-----')
+        >>>     #print('tree1')
+        >>>     #_print_forest(tree1)
+        >>>     #print('tree2')
+        >>>     #_print_forest(tree2)
+        >>>     subtree1, subtree2 = maximum_common_ordered_subtree_isomorphism(tree1, tree2, node_affinity='auto')
+        >>>     #print('-----')
+        >>>     #print('subtree1')
+        >>>     #_print_forest(subtree1)
+        >>>     #print('subtree2')
+        >>>     #_print_forest(subtree2)
+        >>>     from networkx import isomorphism
+        >>>     assert isomorphism.DiGraphMatcher(tree1, subtree1).subgraph_is_isomorphic()
+        >>>     assert isomorphism.DiGraphMatcher(tree2, subtree2).subgraph_is_isomorphic()
+
+    """
+    try:
+        if not (isinstance(tree1, nx.OrderedDiGraph) and nx.is_forest(tree1)):
+            raise nx.NetworkXNotImplemented('only implemented for directed ordered trees')
+        if not (isinstance(tree1, nx.OrderedDiGraph) and nx.is_forest(tree2)):
+            raise nx.NetworkXNotImplemented('only implemented for directed ordered trees')
+    except nx.NetworkXPointlessConcept:
+        subtree1 = nx.OrderedDiGraph()
+        subtree2 = nx.OrderedDiGraph()
+        return subtree1, subtree2
+
+    # Convert the trees to balanced sequences
+    sequence1, open_to_close, toks = tree_to_balanced_sequence(tree1, open_to_close=None, toks=None, mode='chr')
+    sequence2, open_to_close, toks = tree_to_balanced_sequence(tree2, open_to_close, toks, mode='chr')
+    seq1 = sequence1
+    seq2 = sequence2
+
+    open_to_tok = ub.invert_dict(toks)
+
+    # Solve the longest common balanced sequence problem
+    best, value = longest_common_isomorphic_sequence(
+        seq1, seq2, open_to_close, open_to_tok=open_to_tok, node_affinity=node_affinity)
     subseq1, subseq2 = best
 
     # Convert the subsequence back into a tree
@@ -134,7 +255,7 @@ class UnbalancedException(Exception):
     pass
 
 
-def tree_to_balanced_sequence(tree, open_to_close=None, toks=None, mode='number'):
+def tree_to_balanced_sequence(tree, open_to_close=None, toks=None, mode='tuple'):
     from collections import namedtuple
     Token = namedtuple('Token', ['action', 'value'])
     # mapping between opening and closing tokens
@@ -161,6 +282,13 @@ def tree_to_balanced_sequence(tree, open_to_close=None, toks=None, mode='number'
                     elif mode == 'number':
                         open_tok = len(toks) + 1
                         close_tok = -open_tok
+                    elif mode == 'paren':
+                        open_tok = '{}('.format(v)
+                        close_tok = '){}'.format(v)
+                    elif mode == 'chr':
+                        open_tok = str(v)
+                        close_tok = str(v) + u'\u0301'
+                        # chr(ord(v) + 128)
                     toks[v] = open_tok
                     open_to_close[open_tok] = close_tok
                 open_tok = toks[v]
@@ -443,260 +571,11 @@ def generate_balance(sequence, open_to_close, safe=True):
         yield from generate_balance_unsafe(sequence, open_to_close)
 
 
-def balanced_decomp_index(sequence, open_to_close):
-    """
-    open_to_close = {0: 1}
-    sequence = [0, 0, 0, 1, 1, 1, 0, 1]
-    open_to_close = {'{': '}', '(': ')', '[': ']'}
-    sequence = '({[[]]})[[][]]{{}}'
-    seq = balanced_decomp_index(sequence, open_to_close)
-
-    a1, b1, head1, tail1, head_tail = seq.decomp()
-    print('tail1 = {!r}'.format(tail1))
-    print('head1 = {!r}'.format(head1))
-    print('head_tail = {!r}'.format(head_tail))
-
-
-    a1, b1, head1, tail1 = balanced_decomp_unsafe2(sequence, open_to_close)
-    head_tail = head1 + tail1
-    print('tail1 = {!r}'.format(tail1))
-    print('head1 = {!r}'.format(head1))
-    print('head_tail = {!r}'.format(head_tail))
-
-    """
-    paired_idxs = [-1] * len(sequence)
-    stack = []
-    for idx, token in enumerate(sequence):
-        if token in open_to_close:
-            stack.append((token, idx))
-        else:
-            # Check that closing elements
-            if not stack:
-                raise UnbalancedException
-            prev_open, prev_idx = stack.pop()
-            want_close = open_to_close[prev_open]
-            paired_idxs[prev_idx] = idx
-            paired_idxs[idx] = prev_idx
-
-            if token != want_close:
-                raise UnbalancedException
-
-    if USE_FAST_CAT_SHIFT_INDEX:
-        paired_idxs = FastCatShiftIndex.from_single(paired_idxs)
-    else:
-        paired_idxs = np.array(paired_idxs)
-    self = DecomposableSequence(sequence, paired_idxs, 0, len(sequence))
-    return self
-    # open_tok, close_tok, head, tail = self.decomp()
-    # print('self = {!r}'.format(self))
-    # print('head = {!r}'.format(head))
-    # print('tail = {!r}'.format(tail))
-    # open_tok1, close_tok1, head1, tail1 = tail.decomp()
-    # print('head1 = {!r}'.format(head1))
-    # print('tail1 = {!r}'.format(tail1))
-    # open_tok2, close_tok2, head2, tail2 = tail1.decomp()
-    # print('head2 = {!r}'.format(head2))
-    # print('tail2 = {!r}'.format(tail2))
-
-    # head_tail = head + tail
-    # print('head_tail = {!r}'.format(head_tail))
-
-    # return pop_open, pop_close, head, tail
-
-
-class DecomposableSequence(ub.NiceRepr):
-    def __init__(self, seq, paired_idxs, offset=0, length=None):
-        self.seq = seq
-        self.paired_idxs = paired_idxs
-        self.offset = offset
-        self.length = length
-
-    def __nice__(self):
-        return self.seq[self.offset:self.offset + self.length]
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-        return self.seq[idx + self.offset]
-
-    @profile
-    def decomp(self):
-        """
-        from netharn.initializers._nx_extensions import *  # NOQA
-        open_to_close = {0: 1}
-        sequence = [0, 0, 0, 1, 1, 1, 0, 1]
-        open_to_close = {'{': '}', '(': ')', '[': ']'}
-        sequence = '({[[]]})[[][]]{{}}'
-        self = balanced_decomp_index(sequence, open_to_close)
-        a1, b1, head1, tail1, head_tail = self.decomp()
-
-        tail1.decomp()
-        """
-        offset = self.offset
-        open_idx = offset
-        close_idx = self.paired_idxs[open_idx]
-
-        open_tok = self.seq[open_idx:open_idx + 1]
-        close_tok = self.seq[close_idx:close_idx + 1]
-
-        head_len = close_idx - open_idx - 1
-        tail_len = self.length - (close_idx - offset) - 1
-        # print('head_len = {!r}, tail_len={}'.format(head_len, tail_len))
-        head_pos = offset + 1
-        tail_pos = close_idx + 1
-
-        head = DecomposableSequence(self.seq, self.paired_idxs, head_pos, head_len)
-        tail = DecomposableSequence(self.seq, self.paired_idxs, tail_pos, tail_len)
-
-        head_tail = head + tail
-        return open_tok, close_tok, head, tail, head_tail
-
-    def __eq__(self, other):
-        return self.seq == other.seq
-
-    def __hash__(self):
-        return hash(self.seq)
-
-    @profile
-    def rebase(self, new_offset=0):
-        offset = self.offset
-        shift = (offset - new_offset)
-        sl = slice(offset, offset + self.length)
-        newseq = self.seq[sl]
-        new_paired_idxs = self.paired_idxs[sl]
-        if shift:
-            if USE_FAST_CAT_SHIFT_INDEX:
-                new_paired_idxs.add_inplace(-shift)
-            else:
-                new_paired_idxs = new_paired_idxs - shift
-        return newseq, new_paired_idxs
-
-    @profile
-    def __add__(self, other):
-        """
-        self = head1
-        other = tail1
-        """
-        # Each rebase is 37% of the computation for a total 74%
-        newseq1, new_paired_idxs1 = self.rebase()
-        newseq2, new_paired_idxs2 = other.rebase(new_offset=len(newseq1))
-        newseq = newseq1 + newseq2
-        # This is about 15% of the computation
-        if USE_FAST_CAT_SHIFT_INDEX:
-            new_paired_idxs = new_paired_idxs1.concat(new_paired_idxs2)
-        else:
-            new_paired_idxs = np.concatenate([new_paired_idxs1, new_paired_idxs2], axis=0)
-        new = DecomposableSequence(newseq, new_paired_idxs, 0, len(newseq))
-        return new
-
-    @profile
-    def combine(self, a, b, other):
-        """
-        self = head1
-        other = tail1
-        """
-        newseq1, new_paired_idxs1 = self.rebase(new_offset=1)
-        new_head_len = len(newseq1)
-        newseq2, new_paired_idxs2 = other.rebase(new_offset=(new_head_len + 2))
-        newseq = a + newseq1 + b + newseq2
-
-        if USE_FAST_CAT_SHIFT_INDEX:
-            apart = FastCatShiftIndex.from_single([new_head_len + 1])
-            bpart = FastCatShiftIndex.from_single([0])
-            new_paired_idxs = apart + new_paired_idxs1 + bpart + new_paired_idxs2
-        else:
-            new_paired_idxs = np.r_[new_head_len + 1, new_paired_idxs1, 0, new_paired_idxs2]
-        new = DecomposableSequence(newseq, new_paired_idxs, 0, len(newseq))
-        return new
-
-
-class FastCatShiftIndex(ub.NiceRepr):
-    """
-    The idea is to make the operations very fast:
-        * adding an offset to each item
-        * concatenating two arrays
-        * slicing within an array
-
-    Example:
-        >>> self = FastCatShiftIndex.from_single([1, 2, 3])
-        >>> other = FastCatShiftIndex.from_single([1, 2, 3])
-        >>> other.add_inplace(10)
-        >>> new = self.concat(other)
-
-        >>> self = FastCatShiftIndex.from_single([1] * 20)
-        >>> start = 0
-        >>> stop = 16
-        >>> self.subslice(0, 25)
-
-        >>> self = new
-        >>> start, stop = 4, 5
-        >>> new = self.subslice(start, stop)
-        >>> index = slice(start, stop)
-        >>> self[index]
-    """
-    # Can we make an efficient data structure fo this?  The concats and the
-    # offsets are the culprit for most of the runtime.
-    def __init__(self, datas, offsets, indexer):
-        self.datas = datas
-        self.offsets = offsets
-        self.indexer = indexer
-
-    def add_inplace(self, offset):
-        self.offsets = [o + offset for o in self.offsets]
-
-    def subslice(self, start, stop):
-        outer1, inner1  = self.indexer.unravel(start)
-        outer2, inner2  = self.indexer.unravel(stop)
-
-        if outer1 == outer2:
-            new_datas = [self.datas[outer1][inner1:inner2]]
-            new_offsets = [self.offsets[outer1]]
-        else:
-            first = [self.datas[outer1][inner1:]]
-            inner = self.datas[outer1 + 1:outer2]
-            ender = [self.datas[outer2][:inner2]]
-            new_datas = first + inner + ender
-            new_offsets = self.offsets[outer1:outer2 + 1]
-        new_indexer = self.indexer._subslice(outer1, outer2, inner1, inner2)
-        new = self.__class__(new_datas, new_offsets, new_indexer)
-        return new
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return self.subslice(index.start, index.stop)
-        else:
-            outer, inner  = self.indexer.unravel(index)
-            offset = self.offsets[outer]
-            return self.datas[outer][inner] + offset
-
-    @classmethod
-    def from_single(cls, data, offset=0):
-        indexer = FlatIndexer([len(data)], np.array([len(data)]))
-        self = cls([data], [offset], indexer)
-        return self
-
-    def __nice__(self):
-        return self.resolve()
-
-    def __add__(self, other):
-        return self.concat(other)
-
-    def concat(self, other):
-        new_indexer = self.indexer.concat(other.indexer)
-        new_datas = self.datas + other.datas
-        new_offsets = self.offsets + other.offsets
-        new = self.__class__(new_datas, new_offsets, new_indexer)
-        return new
-
-    def resolve(self):
-        return [d + offset for data, offset in zip(self.datas, self.offsets) for d in data]
-
-
-def longest_common_balanced_sequence(seq1, seq2, open_to_close, eq=None, open_to_tok=None):
+@profile
+def longest_common_balanced_sequence(seq1, seq2, open_to_close, node_affinity='auto', open_to_tok=None):
     """
     CommandLine:
-        xdoctest -m /home/joncrall/code/netharn/netharn/initializers/_nx_extensions.py longest_common_balanced_sequence:0 --profile
+        xdoctest -m /home/joncrall/code/netharn/netharn/initializers/_nx_extensions.py longest_common_balanced_sequence:0 --profile && cat profile_output.txt
 
     Example:
         >>> tree1 = random_ordered_tree(100, seed=1)
@@ -711,18 +590,6 @@ def longest_common_balanced_sequence(seq1, seq2, open_to_close, eq=None, open_to
         >>> seq1, open_to_close, toks = tree_to_balanced_sequence(tree1)
         >>> seq2, open_to_close, toks = tree_to_balanced_sequence(tree2, open_to_close, toks)
         >>> longest_common_balanced_sequence(seq1, seq2, open_to_close)
-
-        >>> import timerit
-        >>> ti = timerit.Timerit(10, bestof=10, verbose=2, unit='ms')
-        >>> from netharn.initializers import _nx_extensions
-        >>> _nx_extensions.DECOMP_SEQ_INDEX = 0
-        >>> for timer in ti.reset('without-index'):
-        >>>     with timer:
-        >>>         _nx_extensions.longest_common_balanced_sequence(seq1, seq2, open_to_close)
-        >>> _nx_extensions.DECOMP_SEQ_INDEX = 1
-        >>> for timer in ti.reset('with-index'):
-        >>>     with timer:
-        >>>         _nx_extensions.longest_common_balanced_sequence(seq1, seq2, open_to_close)
 
         import sys, ubelt
         sys.path.append(ubelt.expandpath('~/code/netharn'))
@@ -760,32 +627,25 @@ def longest_common_balanced_sequence(seq1, seq2, open_to_close, eq=None, open_to
     subseq1, subseq2 = best
     print('subseq1 = {!r}'.format(subseq1))
     """
-    if eq is None:
-        eq = operator.eq
+    if node_affinity == 'auto':
+        node_affinity = operator.eq
+    if node_affinity is None:
+        def _matchany(a, b):
+            return True
+        node_affinity = _matchany
     _memo = {}
     _seq_memo = {}
-
-    if DECOMP_SEQ_INDEX:
-        seq1 = balanced_decomp_index(seq1, open_to_close)
-        seq2 = balanced_decomp_index(seq2, open_to_close)
-
     if open_to_tok is None:
         class Dummy:
             def __getitem__(self, key):
                 return key
         open_to_tok = Dummy()
-
-    best, value = _lcs(seq1, seq2, open_to_close, eq, open_to_tok, _memo, _seq_memo)
-
-    if DECOMP_SEQ_INDEX:
-        # unpack
-        a, b = best
-        best = (a.seq, b.seq)
+    best, value = _lcs(seq1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
     return best, value
 
 
 @profile
-def _lcs(seq1, seq2, open_to_close, eq, open_to_tok, _memo, _seq_memo):
+def _lcs(seq1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo):
     if not seq1:
         return (seq1, seq1), 0
     elif not seq2:
@@ -793,70 +653,279 @@ def _lcs(seq1, seq2, open_to_close, eq, open_to_tok, _memo, _seq_memo):
     else:
         # if len(seq2) < len(seq1):
         #     seq1, seq2 = seq2, seq1
-        key = (seq1, seq2)
+        # key = (seq1, seq2)
+        key1 = hash(seq1)  # using hash(seq) is faster than seq itself
+        key2 = hash(seq2)
+        key = hash((key1, key2))
         if key in _memo:
             return _memo[key]
 
         # TODO: we can probably just do a single linear run through the
         # sequences to index the sub-sequence locations and then apply an
         # offset when we run the decomposed sequence.
-
-        if DECOMP_SEQ_INDEX:
-            a1, b1, head1, tail1, head1_tail1 = seq1.decomp()
-            a2, b2, head2, tail2, head2_tail2 = seq2.decomp()
+        if key1 in _seq_memo:
+            a1, b1, head1, tail1, head1_tail1 = _seq_memo[key1]
         else:
-            if seq1 in _seq_memo:
-                a1, b1, head1, tail1 = _seq_memo[seq1]
-            else:
-                a1, b1, head1, tail1 = balanced_decomp_unsafe2(seq1, open_to_close)
-                _seq_memo[seq1] = a1, b1, head1, tail1
-
-            if seq2 in _seq_memo:
-                a2, b2, head2, tail2 = _seq_memo[seq2]
-            else:
-                a2, b2, head2, tail2 = balanced_decomp_unsafe2(seq2, open_to_close)
-                _seq_memo[seq2] = a2, b2, head2, tail2
+            a1, b1, head1, tail1 = balanced_decomp_unsafe2(seq1, open_to_close)
             head1_tail1 = head1 + tail1
-            head2_tail2 = head2 + tail2
+            _seq_memo[key1] = a1, b1, head1, tail1, head1_tail1
 
-        candidates = {}
+        if key2 in _seq_memo:
+            a2, b2, head2, tail2, head2_tail2 = _seq_memo[key2]
+        else:
+            a2, b2, head2, tail2 = balanced_decomp_unsafe2(seq2, open_to_close)
+            head2_tail2 = head2 + tail2
+            _seq_memo[key2] = a2, b2, head2, tail2, head2_tail2
+
+        # Case 2: The current edge in sequence1 is deleted
+        best, val = _lcs(head1_tail1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+
+        # Case 3: The current edge in sequence2 is deleted
+        cand, val_alt = _lcs(seq1, head2_tail2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+        if val_alt > val:
+            best = cand
+            val = val_alt
 
         # Case 1: The LCS involves this edge
         t1 = open_to_tok[a1[0]]
         t2 = open_to_tok[a2[0]]
-        # if eq(a1[0], a2[0]):
-        if eq(t1, t2):
-            # TODO: need to return the correspondence between the
-            # matches and the original nodes.
-            new_heads, pval_h = _lcs(head1, head2, open_to_close, eq, open_to_tok, _memo, _seq_memo)
-            new_tails, pval_t = _lcs(tail1, tail2, open_to_close, eq, open_to_tok, _memo, _seq_memo)
+        # if node_affinity(a1[0], a2[0]):
+        affinity = node_affinity(t1, t2)
+        if affinity:
+            new_heads, pval_h = _lcs(head1, head2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+            new_tails, pval_t = _lcs(tail1, tail2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
 
             new_head1, new_head2 = new_heads
             new_tail1, new_tail2 = new_tails
 
-            if DECOMP_SEQ_INDEX:
-                subseq1 = new_head1.combine(a1, b1, new_tail1)
-                subseq2 = new_head2.combine(a2, b2, new_tail2)
-            else:
+            subseq1 = a1 + new_head1 + b1 + new_tail1
+            subseq2 = a2 + new_head2 + b2 + new_tail2
+
+            cand = (subseq1, subseq2)
+            val_alt = pval_h + pval_t + affinity
+            if val_alt > val:
+                best = cand
+                val = val_alt
+
+        found = (best, val)
+        _memo[key] = found
+        return found
+
+
+@profile
+def longest_common_isomorphic_sequence(seq1, seq2, open_to_close, node_affinity='auto', open_to_tok=None):
+    if node_affinity == 'auto':
+        node_affinity = operator.eq
+    if node_affinity is None:
+        def _matchany(a, b):
+            return True
+        node_affinity = _matchany
+    _memo = {}
+    _seq_memo = {}
+    if open_to_tok is None:
+        class Dummy:
+            def __getitem__(self, key):
+                return key
+        open_to_tok = Dummy()
+    best_lvl, value_lvl, best_low, value_low = _lcsi(seq1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+
+    if value_lvl > value_low:
+        best = best_lvl
+        value = value_lvl
+    else:
+        best = best_low
+        value = value_low
+
+    return best, value
+
+
+@profile
+def _lcsi(seq1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo):
+    """
+    Prototype isomorphic only version
+    """
+    if not seq1:
+        return (seq1, seq1), 0, (seq1, seq1), 0
+    elif not seq2:
+        return (seq2, seq2), 0, (seq2, seq2), 0
+    else:
+        key1 = hash(seq1)
+        key2 = hash(seq2)
+        key = hash((key1, key2))
+        if key in _memo:
+            return _memo[key]
+
+        if key1 in _seq_memo:
+            a1, b1, head1, tail1, head1_tail1 = _seq_memo[key1]
+        else:
+            a1, b1, head1, tail1 = balanced_decomp_unsafe2(seq1, open_to_close)
+            head1_tail1 = head1 + tail1
+            _seq_memo[key1] = a1, b1, head1, tail1, head1_tail1
+
+        if key2 in _seq_memo:
+            a2, b2, head2, tail2, head2_tail2 = _seq_memo[key2]
+        else:
+            a2, b2, head2, tail2 = balanced_decomp_unsafe2(seq2, open_to_close)
+            head2_tail2 = head2 + tail2
+            _seq_memo[key2] = a2, b2, head2, tail2, head2_tail2
+
+        # TODO: IS THIS THE CORRECT MODIFICATION TO THE RECURRANCE TO
+        # ACHIEVE A SUBTREE ISOMORPHISM INSTEAD OF AN EMBEDDING?
+        r"""
+
+        tree1 = nx.OrderedDiGraph()
+        tree1.add_nodes_from(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+        tree1.add_edges_from([('a', 'b'), ('a', 'c'), ('a', 'd'), ('b', 'e'), ('b', 'f'), ('c', 'g')])
+
+        _print_forest(tree1)
+
+        └── a
+            ├── b
+            │   ├── e
+            │   └── f
+            ├── c
+            │   └── g
+            └── d
+
+        seq1, open_to_close, toks = tree_to_balanced_sequence(tree1, mode='chr')
+        a, b, head1, tail1 = balanced_decomp(seq1, open_to_close)
+        _print_forest(seq_to_tree(head1, open_to_close, toks))
+        _print_forest(seq_to_tree(tail1, open_to_close, toks))
+
+        CONTRACTED NODE:
+        a
+
+        HEAD (children of the contracted node)
+
+        ├── b
+        │   ├── e
+        │   └── f
+        ├── c
+        │   └── g
+        └── d
+
+        TAIL (right siblings of the contracted node)
+        --
+
+        a, b, head11, tail11 = balanced_decomp(head1, open_to_close)
+        _print_forest(seq_to_tree(head11, open_to_close, toks))
+        _print_forest(seq_to_tree(tail11, open_to_close, toks))
+
+        CONTRACTED NODE:
+        b
+
+        HEAD OF HEAD
+        ├── e
+        └── f
+
+        TAIL OF HEAD
+        ├── c
+        │   └── g
+        └── d
+
+
+        The problem here is that if you are at a level where two levels down
+        there are two matches, you will return those two matches as the best
+        solution at that layer, and therefore you won't flag if there is a
+        feasible solution at this layer. This is a problem because that
+        feasible low-value solution might be part of the highest value
+        solution.
+
+        Perhaps we return two solutions at each step: the solution value at
+        this level if one exists, and the solution value at any other depth.
+        We are allowed to add to the first, but can take the second if we want
+        to.
+
+        This should work because we know a solution that skipped a layer will
+        never be added to, and we are always keeping track of the solution that
+        might change. By the time we get to the root level, we have enough info
+        to know which is better.
+        """
+
+        # If any of these cases are selected we are not choosing the leftmost
+        # node as our match
+        best_lvl, val_lvl, best_low, val_low = None, -1, None, -1
+
+        # TODO: it may be the case that some of these tests are redundant, in
+        # which case we could simplify and speed up the algorithm. We would
+        # need to prove that the value in one of these tests was always lower
+        # than the value in another one of these tests, in that case we could
+        # remove the former.
+
+        # When using the head part of the decomp, we can only update the "low" candidate
+        cand_lvl, score_lvl, cand_low, score_low = _lcsi(head1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+        if score_low > val_low:
+            val_low = score_low
+            best_low = cand_low
+        if score_lvl > val_low:
+            val_low = score_lvl
+            best_low = cand_lvl
+
+        cand_lvl, score_lvl, cand_low, score_low = _lcsi(seq1, head2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+        if score_low > val_low:
+            val_low = score_low
+            best_low = cand_low
+        if score_lvl > val_low:
+            val_low = score_lvl
+            best_low = cand_lvl
+
+        # As long as we are only using the tail part of the decomp we can update
+        # both the lvl and low scores
+        cand_lvl, score_lvl, cand_low, score_low = _lcsi(tail1, seq2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+        if score_lvl > val_lvl:
+            val_lvl = score_lvl
+            best_lvl = cand_lvl
+        if score_low > val_low:
+            val_low = score_low
+            best_low = cand_low
+
+        cand_lvl, score_lvl, cand_low, score_low = _lcsi(seq1, tail2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+        if score_lvl > val_lvl:
+            val_lvl = score_lvl
+            best_lvl = cand_lvl
+        if score_low > val_low:
+            val_low = score_low
+            best_low = cand_low
+
+        # This is the case where we found a matching node
+        t1 = open_to_tok[a1[0]]
+        t2 = open_to_tok[a2[0]]
+        affinity = node_affinity(t1, t2)
+        if affinity:
+
+            new_heads_lvl, pval_h_lvl, new_heads_low, pval_h_low = _lcsi(head1, head2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+            new_tails_lvl, pval_t_lvl, new_tails_low, pval_t_low = _lcsi(tail1, tail2, open_to_close, node_affinity, open_to_tok, _memo, _seq_memo)
+
+            # Add to the best solution at the former level
+            score_lvl = pval_h_lvl + pval_t_lvl + affinity
+            if score_lvl > val_lvl:
+                new_head1, new_head2 = new_heads_lvl
+                new_tail1, new_tail2 = new_tails_lvl
                 subseq1 = a1 + new_head1 + b1 + new_tail1
                 subseq2 = a2 + new_head2 + b2 + new_tail2
+                cand_lvl = (subseq1, subseq2)
+                val_lvl = score_lvl
+                best_lvl = cand_lvl
 
-            cand1 = (subseq1, subseq2)
-            candidates[cand1] = pval_h + pval_t + 1
+            # In my big tests these were never hit once, is it true that this
+            # test was covered by a previous case?
+            cand_low = new_heads_low
+            score_low = pval_h_low
+            if score_low > val_low:
+                val_low = score_low
+                best_low = cand_low
 
-        # Case 2: The current edge in sequence1 is deleted
-        cand2, val2 = _lcs(head1_tail1, seq2, open_to_close, eq, open_to_tok, _memo, _seq_memo)
-        candidates[cand2] = val2
+            cand_low = new_tails_low
+            score_low = pval_t_low
+            if score_low > val_low:
+                val_low = score_low
+                best_low = cand_low
 
-        # Case 3: The current edge in sequence2 is deleted
-        cand3, val3 = _lcs(seq1, head2_tail2, open_to_close, eq, open_to_tok, _memo, _seq_memo)
-        candidates[cand3] = val3
-
-        best = ub.argmax(candidates)
-        value = candidates[best]
-        # print('key={!r}, best={!r}, value={!r}'.format(key, best, value))
-        _memo[key] = (best, value)
-        return best, value
+        # We return two solutions:
+        # the best AT this level (lvl), and the best AT any lowers (low).
+        found = (best_lvl, val_lvl, best_low, val_low)
+        _memo[key] = found
+        return found
 
 
 def _print_forest(graph):
@@ -870,19 +939,69 @@ def _print_forest(graph):
         graph = CategoryTree.demo('coco').graph
         _print_forest(graph)
     """
+    if len(graph.nodes) == 0:
+        print('--')
+        return
     assert nx.is_forest(graph)
-    from kwcoco.category_tree import to_directed_nested_tuples
-    encoding = to_directed_nested_tuples(graph)
-    def _recurse(encoding, indent=''):
-        for idx, item in enumerate(encoding):
-            node, data, children = item
-            if idx == len(encoding) - 1:
-                this_prefix = indent + '└── '
-                next_prefix = indent + '    '
+
+    def _recurse(node, indent='', islast=False):
+        if islast:
+            this_prefix = indent + '└── '
+            next_prefix = indent + '    '
+        else:
+            this_prefix = indent + '├── '
+            next_prefix = indent + '│   '
+        label = graph.nodes[node].get('label', node)
+        print(this_prefix + str(label))
+        graph.succ[node]
+        children = graph.succ[node]
+        for idx, child in enumerate(children, start=1):
+            islast_next = (idx == len(children))
+            _recurse(child, indent=next_prefix, islast=islast_next)
+
+    sources = [n for n in graph.nodes if graph.in_degree[n] == 0]
+    for idx, node in enumerate(sources, start=1):
+        islast_next = (idx == len(sources))
+        _recurse(node, indent='', islast=islast_next)
+
+
+def maximum_common_ordered_paths(paths1, paths2, sep='/'):
+    import networkx as nx
+
+    # the longest common balanced sequence problem
+    def _affinity(tok1, tok2):
+        score = 0
+        for t1, t2 in zip(tok1[::-1], tok2[::-1]):
+            if t1 == t2:
+                score += 1
             else:
-                this_prefix = indent + '├── '
-                next_prefix = indent + '│   '
-            label = graph.nodes[node].get('label', node)
-            print(this_prefix + str(label))
-            _recurse(children, indent=next_prefix)
-    _recurse(encoding)
+                break
+        return score
+        # return tok1[-1] == tok2[-1]
+    node_affinity = _affinity
+    # import operator
+    # eq = operator.eq
+
+    def paths_to_tree(paths):
+        tree = nx.OrderedDiGraph()
+        for path in sorted(paths):
+            parts = tuple(path.split(sep))
+            node_path = []
+            for i in range(1, len(parts) + 1):
+                node = parts[0:i]
+                tree.add_node(node)
+                tree.nodes[node]['label'] = node[-1]
+                node_path.append(node)
+            for u, v in ub.iter_window(node_path, 2):
+                tree.add_edge(u, v)
+        return tree
+
+    tree1 = paths_to_tree(paths1)
+    tree2 = paths_to_tree(paths2)
+
+    subtree1, subtree2 = maximum_common_ordered_tree_embedding(tree1, tree2, node_affinity=node_affinity)
+    # subtree1, subtree2 = maximum_common_ordered_subtree_isomorphism(tree1, tree2, node_affinity=node_affinity)
+
+    subpaths1 = [sep.join(node) for node in subtree1.nodes if subtree1.out_degree[node] == 0]
+    subpaths2 = [sep.join(node) for node in subtree2.nodes if subtree2.out_degree[node] == 0]
+    return subpaths1, subpaths2
