@@ -4,7 +4,23 @@ This changelog follows the specifications detailed in: [Keep a Changelog](https:
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), although we have not yet reached a `1.0.0` release.
 
 
-## Version 0.5.9 - Unreleased
+## Version 0.5.10 - Unreleased
+
+
+### Added
+* `allow_unicode` option to `FitHarnPreferences`, which can be set to False to
+  disable utf8 characters in output formatting.
+
+### Fixed
+* Typo: directory `explit_checkpoints` renamed to `explicit_checkpoints`.
+
+
+### Deprecated
+* Deprecate `colored` option in `FitHarnPreferences`. Use `NO_COLOR` environ to
+  disable ANSI coloring instead.
+
+
+## Version 0.5.9 - Released 2020-08-26
 
 ### Changed
  
