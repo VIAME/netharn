@@ -353,7 +353,7 @@ def _package_deploy2(dpath, info, name=None):
         #     zwrite(myzip, bestacc_fpath)
         # for p in glob.glob(join(train_dpath, 'glance/*')):
         #     zwrite(myzip, p)
-    print('[DEPLOYER] Deployed zipfpath={}'.format(zipfpath))
+    #print('[DEPLOYER] Deployed zipfpath={}'.format(zipfpath))
     return zipfpath
 
 
