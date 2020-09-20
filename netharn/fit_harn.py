@@ -1658,7 +1658,7 @@ class CoreMixin(object):
         try:
             deploy_fpath = export.DeployedModel(harn.train_dpath).package()
             #harn.info('wrote single-file deployment to: {!r}'.format(
-                deploy_fpath))
+            #    deploy_fpath))
 
             if True:
                 # symlink the deployed model to a static filename to make it
