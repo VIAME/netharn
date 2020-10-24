@@ -463,7 +463,7 @@ class InitializeMixin(object):
                 mru_dpath = join(harn.hyper.workdir, '_mru')
                 try:
                     ub.symlink(train_info['train_dpath'], mru_dpath,
-                               overwrite=True, verbose=1)
+                               overwrite=True, verbose=0)
                 except OSError as ex:
                     harn.warn('Unable to symlink: {!r}'.format(ex))
 
@@ -471,7 +471,7 @@ class InitializeMixin(object):
                 try:
                     ub.symlink(train_info['train_dpath'],
                                train_info['name_dpath'], overwrite=True,
-                               verbose=3)
+                               verbose=0)
                 except OSError as ex:
                     harn.warn('Unable to symlink: {!r}'.format(ex))
 
@@ -1639,8 +1639,8 @@ class CoreMixin(object):
             harn._close_prog()
             raise
 
-        harn.info('\n\n\n')
-        harn.info('training completed')
+        #harn.info('\n\n\n')
+        #harn.info('training completed')
 
         if harn._tlog is not None:
             train_base = dirname(harn.name_dpath or harn.train_dpath)
@@ -1672,7 +1672,7 @@ class CoreMixin(object):
             static_modpath = torch_liberator.export_model_code(
                 harn.train_dpath, model_class, initkw=model_params,
                 export_modules=export_modules)
-            harn.info('Exported model topology to {}'.format(static_modpath))
+            #harn.info('Exported model topology to {}'.format(static_modpath))
         except Exception as ex:
             harn.warn('Failed to export model topology: {}'.format(repr(ex)))
         return static_modpath
@@ -1704,8 +1704,8 @@ class CoreMixin(object):
                 model=static_modpath,
                 train_info_fpath=train_info_fpath,
             ).package(harn.train_dpath)
-            harn.info('wrote single-file deployment to: {!r}'.format(
-                deploy_fpath))
+            #harn.info('wrote single-file deployment to: {!r}'.format(
+            #    deploy_fpath))
 
             if True:
                 # symlink the deployed model to a static filename to make it
@@ -1713,7 +1713,7 @@ class CoreMixin(object):
                 static_deploy_fpath = join(harn.train_dpath, 'deploy.zip')
                 try:
                     ub.symlink(deploy_fpath, static_deploy_fpath,
-                               overwrite=True, verbose=1)
+                               overwrite=True, verbose=0)
                 except OSError as ex:
                     harn.warn('Unable to symlink: {!r}'.format(ex))
 
