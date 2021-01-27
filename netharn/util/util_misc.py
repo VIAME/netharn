@@ -3,6 +3,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import numpy as np
 import ubelt as ub
 import re
+import os
 
 
 class SupressPrint():
@@ -160,7 +161,8 @@ def strip_ansi(text):
     # text = ansi_escape1.sub('', text)
     # ansi_escape2 = re.compile(r'\x1b\[([0-9,A-Z]{1,2}(;[0-9]{1,2})?(;[0-9]{3})?)?[m|K]?')
     ansi_escape3 = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]', flags=re.IGNORECASE)
-    text = ansi_escape3.sub('', text)
+    if os.name != 'nt':
+        text = ansi_escape3.sub('', text)
     return text
 
 
